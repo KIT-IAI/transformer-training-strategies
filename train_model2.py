@@ -53,9 +53,9 @@ def main(args):
     test_dataset = TransformerDataset(test_loads, test_features, INPUT_LENGTH, HORIZON)
     print(len(training_dataset), len(validation_dataset), len(test_dataset))
 
-    training_data_loader = DataLoader(training_dataset, shuffle=True, batch_size=BATCH_SIZE)
-    validation_data_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE)
-    test_data_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+    training_data_loader = DataLoader(training_dataset, shuffle=True, batch_size=BATCH_SIZE, num_workers=8)
+    validation_data_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, num_workers=8)
+    test_data_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=8)
 
     model = TimeSeriesTransformer(d_model=160, input_features_count=10, num_encoder_layers=2,
                                   num_decoder_layers=2, dim_feedforward=160, dropout=0.1, attention_heads=8)
@@ -107,6 +107,6 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--horizon", type=int)
+    parser.add_argument("--horizon", type=int, required=True)
     args = parser.parse_args()
     main(args)
