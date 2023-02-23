@@ -13,7 +13,7 @@ from tqdm import tqdm
 import math
 import pickle
 
-from dataset import UCIDataset, time_delta_hours, trim_leading_zeros
+from uci_dataset import UCIDataset, time_delta_hours, trim_leading_zeros
 from transformer_network import TimeSeriesTransformer
 
 
