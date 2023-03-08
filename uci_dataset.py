@@ -59,7 +59,7 @@ def load_dataset(uci_repo: bool, preprocessed: bool) -> pd.DataFrame:
             data = _drop_short_sequences(data)
     else:
         data = pandas.read_csv(AUTOFORMER_DATASET_FILE, parse_dates=[0], index_col=0)
-        data.index = pandas.date_range(start=datetime.datetime(2014, 1, 1), periods=len(data), freq="H")
+        data.index = pandas.date_range(start=datetime.datetime(2012, 1, 1), periods=len(data), freq="H")
     return data
 
 
