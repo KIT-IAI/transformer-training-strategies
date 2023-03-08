@@ -93,7 +93,6 @@ def main(args):
             epoch_loss = 0
 
             for batch_i, (x_enc, x_dec, y) in tqdm(enumerate(training_data_loader), total=len(training_data_loader)):
-                print(x_enc.shape, x_dec.shape, y.shape)
                 x_enc, x_dec, y = x_enc.to(DEVICE), x_dec.to(DEVICE), y.to(DEVICE)
                 optimizer.zero_grad()
                 prediction = model(x_enc, x_dec)
