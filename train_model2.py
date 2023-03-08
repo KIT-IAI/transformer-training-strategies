@@ -46,6 +46,10 @@ def main(args):
 
     if args.model_name is None:
         model_name = f"transformer_h{HORIZON}_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
+        if CONV_FILTER_WIDTH is not None:
+            model_name += f"_conv{CONV_FILTER_WIDTH}"
+        if MAX_POOLING is not None:
+            model_name += f"_mp{MAX_POOLING}"
     else:
         model_name = args.model_name
     model_path = "saved_models/" + model_name
