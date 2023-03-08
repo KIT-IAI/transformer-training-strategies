@@ -32,7 +32,7 @@ def evaluate_model(model, data_loader: DataLoader):
 
 
 def main(args):
-    INPUT_LENGTH = 168
+    INPUT_LENGTH = args.input_length
     HORIZON = args.horizon
     N_WORKERS = 1
 
@@ -41,11 +41,15 @@ def main(args):
     EPOCHS = 100
     PATIENCE = 5
 
+    ENCODER_LAYERS = args.encoder_layers
+    DECODER_LAYERS = args.decoder_layers
+    D_MODEL = args.d_model
     CONV_FILTER_WIDTH = args.conv_filter_width
     MAX_POOLING = args.max_pooling
 
     if args.model_name is None:
-        model_name = f"transformer_h{HORIZON}_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
+        model_name = f"transformer_h{HORIZON}_in{INPUT_LENGTH}_enc{ENCODER_LAYERS}_dec{DECODER_LAYERS}_dim{D_MODEL}" \
+                     f"_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
         if CONV_FILTER_WIDTH is not None:
             model_name += f"_conv{CONV_FILTER_WIDTH}"
         if MAX_POOLING is not None:
@@ -70,9 +74,9 @@ def main(args):
     test_data_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=N_WORKERS)
 
     if not args.test:
-        model = TimeSeriesTransformer(d_model=160, input_features_count=10, num_encoder_layers=2,
-                                      num_decoder_layers=2, dim_feedforward=160, dropout=0.1, attention_heads=8,
-                                      conv_filter_width=CONV_FILTER_WIDTH, max_pooling=MAX_POOLING)
+        model = TimeSeriesTransformer(d_model=D_MODEL, input_features_count=10, num_encoder_layers=ENCODER_LAYERS,
+                                      num_decoder_layers=DECODER_LAYERS, dim_feedforward=D_MODEL, dropout=0.1,
+                                      attention_heads=8, conv_filter_width=CONV_FILTER_WIDTH, max_pooling=MAX_POOLING)
         model = model.to(DEVICE)
 
         criterion = nn.MSELoss()
@@ -89,6 +93,7 @@ def main(args):
             epoch_loss = 0
 
             for batch_i, (x_enc, x_dec, y) in tqdm(enumerate(training_data_loader), total=len(training_data_loader)):
+                print(x_enc.shape, x_dec.shape, y.shape)
                 x_enc, x_dec, y = x_enc.to(DEVICE), x_dec.to(DEVICE), y.to(DEVICE)
                 optimizer.zero_grad()
                 prediction = model(x_enc, x_dec)
@@ -128,8 +133,12 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--horizon", type=int, required=True)
+    parser.add_argument("--in", dest="input_length", type=int, required=False, default=168)
     parser.add_argument("--lr", dest="learning_rate", type=float, required=False, default=0.001)
     parser.add_argument("--bs", dest="batch_size", type=int, required=False, default=128)
+    parser.add_argument("--enc", dest="encoder_layers", type=int, required=False, default=2)
+    parser.add_argument("--dec", dest="decoder_layers", type=int, required=False, default=2)
+    parser.add_argument("--d_model", type=int, required=False, default=160)
     parser.add_argument("--conv", dest="conv_filter_width", type=int, required=False, default=False)
     parser.add_argument("--max_pooling", type=int, required=False, default=None)
     parser.add_argument("--test", action="store_true")
