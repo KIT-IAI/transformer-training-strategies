@@ -9,6 +9,7 @@ from tqdm import tqdm
 from dataset.electricity_dataset import ElectricityDataset
 from dataset.transformer_dataset import TransformerDataset
 from transformer_network import TimeSeriesTransformer
+from transformer.informer import Informer
 
 
 DEVICE = "cuda"
@@ -48,8 +49,9 @@ def main(args):
     MAX_POOLING = args.max_pooling
 
     if args.model_name is None:
-        model_name = f"transformer_h{HORIZON}_in{INPUT_LENGTH}_enc{ENCODER_LAYERS}_dec{DECODER_LAYERS}_dim{D_MODEL}" \
-                     f"_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
+        model_name = "informer" if args.informer else "transformer"
+        model_name += f"_h{HORIZON}_in{INPUT_LENGTH}_enc{ENCODER_LAYERS}_dec{DECODER_LAYERS}_dim{D_MODEL}" \
+                      f"_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
         if CONV_FILTER_WIDTH is not None:
             model_name += f"_conv{CONV_FILTER_WIDTH}"
         if MAX_POOLING is not None:
@@ -74,9 +76,14 @@ def main(args):
     test_data_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=N_WORKERS)
 
     if not args.test:
-        model = TimeSeriesTransformer(d_model=D_MODEL, input_features_count=10, num_encoder_layers=ENCODER_LAYERS,
-                                      num_decoder_layers=DECODER_LAYERS, dim_feedforward=D_MODEL, dropout=0.1,
-                                      attention_heads=8, conv_filter_width=CONV_FILTER_WIDTH, max_pooling=MAX_POOLING)
+        if args.informer:
+            model = Informer(input_features_count=10, d_model=D_MODEL, n_heads=8, e_layers=ENCODER_LAYERS,
+                             d_layers=DECODER_LAYERS, d_ff=D_MODEL, dropout=0.1, attn="full")
+        else:
+            model = TimeSeriesTransformer(d_model=D_MODEL, input_features_count=10, num_encoder_layers=ENCODER_LAYERS,
+                                          num_decoder_layers=DECODER_LAYERS, dim_feedforward=D_MODEL, dropout=0.1,
+                                          attention_heads=8, conv_filter_width=CONV_FILTER_WIDTH,
+                                          max_pooling=MAX_POOLING)
         model = model.to(DEVICE)
 
         criterion = nn.MSELoss()
@@ -138,9 +145,10 @@ if __name__ == "__main__":
     parser.add_argument("--enc", dest="encoder_layers", type=int, required=False, default=2)
     parser.add_argument("--dec", dest="decoder_layers", type=int, required=False, default=2)
     parser.add_argument("--d_model", type=int, required=False, default=160)
-    parser.add_argument("--conv", dest="conv_filter_width", type=int, required=False, default=False)
+    parser.add_argument("--conv", dest="conv_filter_width", type=int, required=False, default=None)
     parser.add_argument("--max_pooling", type=int, required=False, default=None)
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--name", dest="model_name", type=str, required=False, default=None)
+    parser.add_argument("--informer", action="store_true")
     args = parser.parse_args()
     main(args)

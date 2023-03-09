@@ -5,18 +5,12 @@ import math
 import torch
 from torch import nn, Tensor
 
-from transformer.transformer import Transformer
-
 
 class ValueEmbedding(nn.Module):
 
-    def __init__(self, d_model: int, time_series_features: int, filter_width: int):
+    def __init__(self, d_model: int, time_series_features=1):
         super(ValueEmbedding, self).__init__()
-        self.filter_width = filter_width
-        if filter_width is None or filter_width == 0:
-            self.projection = nn.Linear(time_series_features, d_model)
-        else:
-            self.projection = nn.Conv1d(time_series_features, d_model, kernel_size=filter_width, padding="same")
+        self.linear = nn.Linear(time_series_features, d_model)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -25,12 +19,7 @@ class ValueEmbedding(nn.Module):
         :param x: the input tensor to project, shape: [batch_size, sequence_length, features]
         :return: the projected tensor of shape: [batch_size, sequence_length, model_dimension]
         """
-        if self.filter_width is None or self.filter_width == 0:
-            return self.projection(x)
-        else:
-            x = x.transpose(1, 2)
-            x = self.projection(x)
-            return x.transpose(2, 1)
+        return self.linear(x)
 
 
 class PositionalEncoding(nn.Module):
@@ -59,10 +48,10 @@ class PositionalEncoding(nn.Module):
 
 class TotalEmbedding(nn.Module):
 
-    def __init__(self, d_model: int, value_features: int, time_features: int, dropout: float, conv_filter_width: int):
+    def __init__(self, d_model: int, value_features: int, time_features: int, dropout: float):
         super(TotalEmbedding, self).__init__()
 
-        self.value_embedding = ValueEmbedding(d_model, value_features + time_features, filter_width=conv_filter_width)
+        self.value_embedding = ValueEmbedding(d_model, value_features + time_features)
         self.positional_encoding = PositionalEncoding(d_model)
 
         self.linear_embedding_weight = nn.Linear(2, 1, bias=False)
@@ -87,17 +76,16 @@ class TotalEmbedding(nn.Module):
 
 
 class TimeSeriesTransformer(nn.Module):
+
     def __init__(self, d_model: int, input_features_count: int, num_encoder_layers: int, num_decoder_layers: int,
-                 dim_feedforward: int, dropout: float, attention_heads: int, conv_filter_width: int = None,
-                 max_pooling: int = None):
+                 dim_feedforward: int, dropout: float, attention_heads: int):
         super().__init__()
-        self.transformer = Transformer(d_model, attention_heads, num_encoder_layers, num_decoder_layers,
-                                       batch_first=True, dim_feedforward=dim_feedforward, dropout=dropout,
-                                       max_pooling=max_pooling)
+        self.transformer = nn.Transformer(d_model, attention_heads, num_encoder_layers, num_decoder_layers,
+                                          batch_first=True, dim_feedforward=dim_feedforward, dropout=dropout)
 
         self.projection = nn.Linear(d_model, 1, bias=True)
-        self.encoder_embedding = TotalEmbedding(d_model, 1, input_features_count - 1, dropout, conv_filter_width)
-        self.decoder_embedding = TotalEmbedding(d_model, 1, input_features_count - 1, dropout, conv_filter_width)
+        self.encoder_embedding = TotalEmbedding(d_model, 1, input_features_count - 1, dropout)
+        self.decoder_embedding = TotalEmbedding(d_model, 1, input_features_count - 1, dropout)
         self.relu = nn.ReLU()
 
     def forward(self, x_enc, x_dec, src_mask=None, tgt_mask=None):
@@ -110,13 +98,13 @@ class TimeSeriesTransformer(nn.Module):
         :param x_dec: the raw input for the decoder, shape: [batch_size, seq_dec_length, features]
         :param src_mask: mask for the encoder (optional, is normally not needed)
         :param tgt_mask: mask for the decoder (optional, normally needed)
-        :returns: the predictions of shape: [batch_size, seq_dec_length]
+        :returns: the predictions of shape: [batch_size, seq_dec_length, 1]
         """
         enc_embedding = self.encoder_embedding(x_enc)
         dec_embedding = self.decoder_embedding(x_dec)
         out = self.transformer(enc_embedding, dec_embedding, src_mask=src_mask, tgt_mask=tgt_mask)
         out = self.projection(self.relu(out))
-        return out[:, :, 0]
+        return out
 
     def get_cross_attention_scores(self):
         return average_attention_scores([layer.multihead_attn.attention_weights
