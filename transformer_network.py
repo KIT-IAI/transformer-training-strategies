@@ -89,13 +89,14 @@ class TotalEmbedding(nn.Module):
 class TimeSeriesTransformer(nn.Module):
     def __init__(self, d_model: int, input_features_count: int, num_encoder_layers: int, num_decoder_layers: int,
                  dim_feedforward: int, dropout: float, attention_heads: int, conv_filter_width: int = None,
-                 max_pooling: int = None):
+                 max_pooling: int = None, output_dimensions: int = 1):
         super().__init__()
+        self.output_dimensions = output_dimensions
         self.transformer = Transformer(d_model, attention_heads, num_encoder_layers, num_decoder_layers,
                                        batch_first=True, dim_feedforward=dim_feedforward, dropout=dropout,
                                        max_pooling=max_pooling)
 
-        self.projection = nn.Linear(d_model, 1, bias=True)
+        self.projection = nn.Linear(d_model, output_dimensions, bias=True)
         self.encoder_embedding = TotalEmbedding(d_model, 1, input_features_count - 1, dropout, conv_filter_width)
         self.decoder_embedding = TotalEmbedding(d_model, 1, input_features_count - 1, dropout, conv_filter_width)
         self.relu = nn.ReLU()
@@ -116,7 +117,9 @@ class TimeSeriesTransformer(nn.Module):
         dec_embedding = self.decoder_embedding(x_dec)
         out = self.transformer(enc_embedding, dec_embedding, src_mask=src_mask, tgt_mask=tgt_mask)
         out = self.projection(self.relu(out))
-        return out[:, :, 0]
+        if self.output_dimensions == 1:
+            out = out[:, :, 0]
+        return out
 
     def get_cross_attention_scores(self):
         return average_attention_scores([layer.multihead_attn.attention_weights

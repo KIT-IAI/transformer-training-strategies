@@ -7,20 +7,32 @@ from .features import get_calendar_features
 
 
 ELECTRICITY_DATASET_FILE = "data-external/autoformer/all_six_datasets/all_six_datasets/electricity/electricity.csv"
+AUSGRID_DATASET_FILE = "data/ausgrid.csv"
 TRAINING_AMOUNT = 0.7
 VALIDATION_AMOUNT = 0.1
 TEST_AMOUNT = 0.2
 
+DATASETS = {
+    "electricity": ELECTRICITY_DATASET_FILE,
+    "ausgrid": AUSGRID_DATASET_FILE
+}
 
-def load_dataframe():
-    data = pd.read_csv(ELECTRICITY_DATASET_FILE, parse_dates=[0], index_col=0)
-    data.index = pd.date_range(start=datetime.datetime(2012, 1, 1), periods=len(data), freq="H")
+
+def load_dataframe(path):
+    data = pd.read_csv(path, parse_dates=[0], index_col=0)
+    if path == ELECTRICITY_DATASET_FILE:
+        data.index = pd.date_range(start=datetime.datetime(2012, 1, 1), periods=len(data), freq="H")
+    elif path == AUSGRID_DATASET_FILE:
+        data = data.drop(labels="2", axis="columns")
     return data
 
 
 class ElectricityDataset:
-    def __init__(self, scale: bool = True, use_calendar_features: bool = True):
-        self.df = load_dataframe()
+    def __init__(self, dataset: str, scale: bool = True, use_calendar_features: bool = True, column: int = None):
+        self.dataset_name = dataset
+        self.df = load_dataframe(DATASETS[dataset])
+        if column is not None:
+            self._select_column(column)
         self.scale = scale
         self.use_calendar_features = use_calendar_features
         self.scaler = None
@@ -29,6 +41,9 @@ class ElectricityDataset:
         self.calendar_features = self._compute_calendar_features() if use_calendar_features else None
         self.training_end = int(TRAINING_AMOUNT * len(self.df))
         self.validation_end = int((TRAINING_AMOUNT + VALIDATION_AMOUNT) * len(self.df))
+
+    def _select_column(self, column: int):
+        self.df = pd.DataFrame(self.df[self.df.columns[column]])
 
     def _compute_calendar_features(self):
         return np.array([get_calendar_features(self.df.index[i]) for i in range(len(self.df))])
@@ -53,9 +68,12 @@ class ElectricityDataset:
     def get_test_data(self):
         return self._get_data(self.validation_end, len(self.df))
 
+    def get_n_columns(self):
+        return len(self.df.columns)
+
 
 if __name__ == "__main__":
-    dataset = ElectricityDataset(scale=True, use_calendar_features=True)
+    dataset = ElectricityDataset("electricity", scale=True, use_calendar_features=True)
     for data, features in (dataset.get_training_data(), dataset.get_validation_data(), dataset.get_test_data()):
         print(data.shape)
         print(features.shape)
