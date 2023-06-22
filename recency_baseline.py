@@ -4,7 +4,7 @@ from dataset.electricity_dataset import ElectricityDataset
 
 
 if __name__ == "__main__":
-    OFFSET = 720
+    OFFSET = 168
 
     dataset = ElectricityDataset("ausgrid")
     test_data, _ = dataset.get_test_data()
@@ -19,3 +19,5 @@ if __name__ == "__main__":
     print(mae_building)
     print(mae_building.shape)
     print(np.mean(mae_building))
+    mse_building = np.mean(np.square(residuals), axis=0)
+    print(np.mean(mse_building))

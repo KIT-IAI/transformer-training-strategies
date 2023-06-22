@@ -15,6 +15,7 @@ from dataset.transformer_dataset import TransformerDataset
 from dataset.multivariate_transformer_dataset import MultivariateTransformerDataset
 from transformer_network import TimeSeriesTransformer
 from transformer.informer import Informer
+from lstm_model import LSTMModel
 
 
 DEVICE = "cuda"
@@ -77,11 +78,19 @@ def main(args):
         np.random.seed(SEED)
 
     if args.model_name is None:
-        model_name = "informer" if args.informer else "transformer"
+        if args.lstm:
+            model_name = "lstm"
+        elif args.informer:
+            model_name = "informer"
+        else:
+            model_name = "transformer"
         if MULTIVARIATE:
             model_name += "_mv"
-        model_name += f"_h{HORIZON}_in{INPUT_LENGTH}_enc{ENCODER_LAYERS}_dec{DECODER_LAYERS}_dim{D_MODEL}" \
-                      f"_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
+        if args.lstm:
+            model_name += f"_h{HORIZON}_in{INPUT_LENGTH}_{ENCODER_LAYERS}x{D_MODEL}_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
+        else:
+            model_name += f"_h{HORIZON}_in{INPUT_LENGTH}_enc{ENCODER_LAYERS}_dec{DECODER_LAYERS}_dim{D_MODEL}" \
+                          f"_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
         if CONV_FILTER_WIDTH is not None:
             model_name += f"_conv{CONV_FILTER_WIDTH}"
         if MAX_POOLING is not None:
@@ -115,7 +124,10 @@ def main(args):
     test_data_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=N_WORKERS)
 
     if not args.test:
-        if args.informer:
+        if args.lstm:
+            model = LSTMModel(input_features=IN_FEATURES, n_layers=ENCODER_LAYERS, n_units=D_MODEL, output_features=OUT_DIMENSIONS,
+                              lookback_size=INPUT_LENGTH, horizon=HORIZON)
+        elif args.informer:
             model = Informer(input_features_count=IN_FEATURES, d_model=D_MODEL, n_heads=8, e_layers=ENCODER_LAYERS,
                              d_layers=DECODER_LAYERS, d_ff=D_MODEL, dropout=0.1, attn="full")
         else:
@@ -190,6 +202,7 @@ def main(args):
                         print("early stopping")
                         early_stopping = True
                         break
+                    model.train()
 
         training_time = time.time() - start_time
 
@@ -223,5 +236,6 @@ if __name__ == "__main__":
     parser.add_argument("--mv", action="store_true")
     parser.add_argument("--seed", type=int, required=False, default=None)
     parser.add_argument("--client", type=int, required=False, default=None)
+    parser.add_argument("--lstm", action="store_true")
     args = parser.parse_args()
     main(args)
