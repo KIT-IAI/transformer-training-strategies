@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 import torch
 from torch import nn
@@ -74,7 +75,7 @@ def evaluate(model, data_loader: DataLoader, mean: float, scale: float):
 if __name__ == "__main__":
     random.seed(1)
 
-    DATASET_NAME = "ausgrid"
+    DATASET_NAME = sys.argv[1]
 
     if DATASET_NAME == "electricity":
         n_buildings = 321
@@ -84,14 +85,14 @@ if __name__ == "__main__":
         TOTAL_BUILDINGS = 299
 
     INPUT_LENGTH = 168
-    OUTPUT_LENGTH = 96
+    OUTPUT_LENGTH = int(sys.argv[2])
     N_LAYERS = 2
     N_UNITS = 1024
 
     BATCH_SIZE = 128
     EPOCHS = 100
     LEARNING_RATE = 0.001
-    PATIENCE = 5
+    PATIENCE = 10
     GAMMA = 0.5
 
     dataset = ElectricityDataset(DATASET_NAME)
