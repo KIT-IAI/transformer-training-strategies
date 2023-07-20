@@ -1,12 +1,13 @@
+import sys
 import numpy as np
 
 from dataset.electricity_dataset import ElectricityDataset
 
 
 if __name__ == "__main__":
-    OFFSET = 168
+    OFFSET = int(sys.argv[2])
 
-    dataset = ElectricityDataset("ausgrid")
+    dataset = ElectricityDataset(sys.argv[1])
     test_data, _ = dataset.get_test_data()
     print(test_data.shape)
 
@@ -18,6 +19,6 @@ if __name__ == "__main__":
     mae_building = np.mean(np.abs(residuals), axis=0)
     print(mae_building)
     print(mae_building.shape)
-    print(np.mean(mae_building))
+    print("mae:", np.mean(mae_building))
     mse_building = np.mean(np.square(residuals), axis=0)
-    print(np.mean(mse_building))
+    print("mse:", np.mean(mse_building))
