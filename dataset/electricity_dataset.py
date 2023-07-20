@@ -6,7 +6,7 @@ from sklearn.preprocessing import StandardScaler
 from .features import get_calendar_features
 
 
-ELECTRICITY_DATASET_FILE = "data-external/autoformer/all_six_datasets/all_six_datasets/electricity/electricity.csv"
+ELECTRICITY_DATASET_FILE = "data/electricity.csv"
 AUSGRID_DATASET_FILE = "data/ausgrid.csv"
 TRAINING_AMOUNT = 0.7
 VALIDATION_AMOUNT = 0.1
