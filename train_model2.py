@@ -49,8 +49,9 @@ def main(args):
     SEED = args.seed
 
     MULTIVARIATE = args.mv
-    IN_FEATURES = 330 if MULTIVARIATE else 10
-    OUT_DIMENSIONS = 321 if MULTIVARIATE else 1
+    N_CLIENTS = 321 if args.dataset == "electricity" else 299
+    IN_FEATURES = N_CLIENTS + 9 if MULTIVARIATE else 10
+    OUT_DIMENSIONS = N_CLIENTS if MULTIVARIATE else 1
     CLIENT = args.client
 
     BATCH_SIZE = args.batch_size
@@ -77,13 +78,14 @@ def main(args):
         random.seed(SEED)
         np.random.seed(SEED)
 
+    model_name = args.dataset
     if args.model_name is None:
         if args.lstm:
-            model_name = "lstm"
+            model_name += "_lstm"
         elif args.informer:
-            model_name = "informer"
+            model_name += "_informer"
         else:
-            model_name = "transformer"
+            model_name += "_transformer"
         if MULTIVARIATE:
             model_name += "_mv"
         if args.lstm:
