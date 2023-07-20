@@ -1,204 +1,243 @@
 import argparse
-import datetime
+import random
 
-import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader
+from torch.nn.utils import clip_grad_norm_
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
-import matplotlib.pyplot as plt
-import random
 from tqdm import tqdm
-import math
-import pickle
+import time
+from datetime import datetime
 
-from uci_dataset import UCIDataset, time_delta_hours, trim_leading_zeros
+from dataset.electricity_dataset import ElectricityDataset
+from dataset.transformer_dataset import TransformerDataset
+from dataset.multivariate_transformer_dataset import MultivariateTransformerDataset
 from transformer_network import TimeSeriesTransformer
+from transformer.informer import Informer
+from lstm_model import LSTMModel
 
 
-INPUT_TIME_STEPS = 7 * 24
-FORECASTING_HORIZON = 24
+DEVICE = "cuda"
 
 
-def get_samples(time_series: pd.Series, calendar_features: np.array):
-    first_prediction_datetime = time_series.index[0]
-    n = len(time_series)
-    data = np.column_stack((time_series, calendar_features[-n:]))
-    X = sliding_window_view(data[:-FORECASTING_HORIZON],
-                            window_shape=INPUT_TIME_STEPS,
-                            axis=0).transpose(0, 2, 1)
-    Y = sliding_window_view(data[INPUT_TIME_STEPS:],
-                            window_shape=FORECASTING_HORIZON,
-                            axis=0).transpose(0, 2, 1)
-    prediction_datetimes = pd.date_range(start=first_prediction_datetime, periods=X.shape[0], freq="H")
-    return X, Y, prediction_datetimes
+def evaluate_model(model, data_loader: DataLoader, n_batches=-1):
+    model.eval()
+    mse_criterion = nn.MSELoss()
+    mae_criterion = nn.L1Loss()
+    total_mse = total_mae = 0
+    if n_batches == -1:
+        n_batches = len(data_loader)
+    for i, (x_enc, x_dec, y) in tqdm(enumerate(data_loader), total=n_batches):
+        x_enc, x_dec, y = x_enc.to(DEVICE), x_dec.to(DEVICE), y.to(DEVICE)
+        with torch.no_grad():
+            output = model(x_enc, x_dec)
+        total_mse += mse_criterion(output, y)
+        total_mae += mae_criterion(output, y)
+        if i + 1 == n_batches:
+            break
+    mean_mse = total_mse.cpu().numpy() / len(data_loader)
+    mean_mae = total_mae.cpu().numpy() / len(data_loader)
+    return {"mse": mean_mse,
+            "mae": mean_mae}
 
 
 def main(args):
-    autoformer_datapoints = time_delta_hours(datetime.datetime(2015, 1, 1), datetime.datetime(2012, 1, 1))
-    n_test = int(autoformer_datapoints * 0.2)
-    n_validation = int(autoformer_datapoints * 0.1)
+    INPUT_LENGTH = args.input_length
+    HORIZON = args.horizon
+    N_WORKERS = 1
+    SEED = args.seed
 
-    uci_dataset = UCIDataset()
+    MULTIVARIATE = args.mv
+    N_CLIENTS = 321 if args.dataset == "electricity" else 299
+    IN_FEATURES = N_CLIENTS + 9 if MULTIVARIATE else 10
+    OUT_DIMENSIONS = N_CLIENTS if MULTIVARIATE else 1
+    CLIENT = args.client
 
-    X_train, Y_train = [], []
-    X_valid, Y_valid = [], []
-    X_test, Y_test = [], []
+    BATCH_SIZE = args.batch_size
+    LEARNING_RATE = args.learning_rate
+    EPOCHS = 100
+    PATIENCE = 10
+    VALIDATE_EVERY_K_STEPS = 10000
+    VALIDATION_BATCHES = -1
+    GAMMA = 0.8
+    MAX_GRADIENT_NORM = 1.0
+    WARMUP_STEPS = 1000
 
-    N_BUILDINGS = uci_dataset.number_of_buildings()
-    buildings = list(uci_dataset.buildings())[1:(N_BUILDINGS + 1)]
+    ENCODER_LAYERS = args.encoder_layers
+    DECODER_LAYERS = args.decoder_layers
+    D_MODEL = args.d_model
+    CONV_FILTER_WIDTH = args.conv_filter_width
+    MAX_POOLING = args.max_pooling
 
-    model_path = "saved_models/transformer"
+    TRAINING_TIME_FILE = "training_times.txt"
 
-    scalers = {}
-    for building in buildings:
-        time_series = trim_leading_zeros(uci_dataset.get_data(building))
-        n_training = len(time_series) - n_test - n_validation
-        scaler = StandardScaler()
-        scalers[building] = scaler
-        scaler.fit(np.array(time_series[:n_training]).reshape(-1, 1))
-        time_series.iloc[:] = scaler.transform(np.array(time_series).reshape(-1, 1)).flatten()
-        X, Y, prediction_times = get_samples(time_series, uci_dataset.calendar_features)
+    if SEED is not None:
+        torch.manual_seed(SEED)
+        torch.cuda.manual_seed(SEED)
+        random.seed(SEED)
+        np.random.seed(SEED)
 
-        n_train = X.shape[0] - n_test - n_validation
-        X_train.append(X[:n_train])
-        Y_train.append(Y[:n_train])
-        X_valid.append(X[n_train:-n_test])
-        Y_valid.append(Y[n_train:-n_test])
-        X_test.append(X[-n_test:])
-        Y_test.append(Y[-n_test:])
+    model_name = args.dataset
+    if args.model_name is None:
+        if args.lstm:
+            model_name += "_lstm"
+        elif args.informer:
+            model_name += "_informer"
+        else:
+            model_name += "_transformer"
+        if MULTIVARIATE:
+            model_name += "_mv"
+        if args.lstm:
+            model_name += f"_h{HORIZON}_in{INPUT_LENGTH}_{ENCODER_LAYERS}x{D_MODEL}_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
+        else:
+            model_name += f"_h{HORIZON}_in{INPUT_LENGTH}_enc{ENCODER_LAYERS}_dec{DECODER_LAYERS}_dim{D_MODEL}" \
+                          f"_bs{BATCH_SIZE}_lr{LEARNING_RATE}"
+        if CONV_FILTER_WIDTH is not None:
+            model_name += f"_conv{CONV_FILTER_WIDTH}"
+        if MAX_POOLING is not None:
+            model_name += f"_mp{MAX_POOLING}"
+        if CLIENT is not None:
+            model_name += f"_client{CLIENT}"
+        if args.seed is not None:
+            model_name += f"_seed{SEED}"
+    else:
+        model_name = args.model_name
+    model_path = "saved_models/" + model_name
 
-    X_train = np.concatenate(X_train, axis=0)
-    Y_train = np.concatenate(Y_train, axis=0)
-    print(X_train.shape, Y_train.shape)
-    X_valid = np.concatenate(X_valid, axis=0)
-    Y_valid = np.concatenate(Y_valid, axis=0)
-    print(X_valid.shape, Y_valid.shape)
-    X_test = np.concatenate(X_test, axis=0)
-    Y_test = np.concatenate(Y_test, axis=0)
-    print(X_test.shape, Y_test.shape)
+    electricity_dataset = ElectricityDataset(dataset=args.dataset, column=CLIENT)
 
-    epochs = 100
-    patience = 10
-    batch_size = 32
-    device = "cuda"
+    train_loads, train_features = electricity_dataset.get_training_data()
+    dev_loads, dev_features = electricity_dataset.get_validation_data()
+    test_loads, test_features = electricity_dataset.get_test_data()
 
-    criterion = nn.MSELoss()
+    if MULTIVARIATE:
+        DatasetType = MultivariateTransformerDataset
+    else:
+        DatasetType = TransformerDataset
 
-    if args.training:
-        model = TimeSeriesTransformer(d_model=160, input_features_count=X_train.shape[2], num_encoder_layers=2,
-                                      num_decoder_layers=2, dim_feedforward=160, dropout=0.0, attention_heads=8)
-        model = model.to(device)
-        print(model)
+    training_dataset = DatasetType(train_loads, train_features, INPUT_LENGTH, HORIZON)
+    validation_dataset = DatasetType(dev_loads, dev_features, INPUT_LENGTH, HORIZON)
+    test_dataset = DatasetType(test_loads, test_features, INPUT_LENGTH, HORIZON)
+    print(len(training_dataset), len(validation_dataset), len(test_dataset))
 
-        example_indices = list(range(X_train.shape[0]))
-        n_batches = len(example_indices) // batch_size
+    training_data_loader = DataLoader(training_dataset, shuffle=True, batch_size=BATCH_SIZE, num_workers=N_WORKERS)
+    validation_data_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, num_workers=N_WORKERS)
+    test_data_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=N_WORKERS)
 
-        optimizer = torch.optim.AdamW(params=model.parameters(), lr=0.002)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+    if not args.test:
+        if args.lstm:
+            model = LSTMModel(input_features=IN_FEATURES, n_layers=ENCODER_LAYERS, n_units=D_MODEL, output_features=OUT_DIMENSIONS,
+                              lookback_size=INPUT_LENGTH, horizon=HORIZON)
+        elif args.informer:
+            model = Informer(input_features_count=IN_FEATURES, d_model=D_MODEL, n_heads=8, e_layers=ENCODER_LAYERS,
+                             d_layers=DECODER_LAYERS, d_ff=D_MODEL, dropout=0.1, attn="full")
+        else:
+            model = TimeSeriesTransformer(d_model=D_MODEL, input_features_count=IN_FEATURES,
+                                          num_encoder_layers=ENCODER_LAYERS, num_decoder_layers=DECODER_LAYERS,
+                                          dim_feedforward=D_MODEL, dropout=0.1, attention_heads=8,
+                                          conv_filter_width=CONV_FILTER_WIDTH, max_pooling=MAX_POOLING,
+                                          output_dimensions=OUT_DIMENSIONS)
+        model = model.to(DEVICE)
+
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.AdamW(params=model.parameters(), lr=0.0)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=GAMMA)
 
         best_validation_loss = np.inf
         epochs_without_improvement = 0
+        early_stopping = False
+        step_i = 0
+        lr_decay_start = False
 
-        for epoch in range(1, epochs + 1):
+        start_time = time.time()
+
+        for epoch in range(1, EPOCHS + 1):
+            if early_stopping:
+                break
+
             print(f"EPOCH {epoch}")
-            random.shuffle(example_indices)
-            batch_start = 0
+            model.train()
             epoch_loss = 0
-            for batch_i in tqdm(range(n_batches)):
-                batch_end = batch_start + batch_size
-                batch_indices = example_indices[batch_start:batch_end]
-                X_enc_batch = torch.tensor(X_train[batch_indices], dtype=torch.float).to(device)
-                X_dec_batch = torch.tensor(Y_train[batch_indices], dtype=torch.float).to(device)
-                y_batch = X_dec_batch[:, :, 0].clone()
-                X_dec_batch[:, :, 0] = 0
 
+            for batch_i, (x_enc, x_dec, y) in tqdm(enumerate(training_data_loader), total=len(training_data_loader)):
+                if step_i < WARMUP_STEPS:
+                    lr = (step_i + 1) * LEARNING_RATE / WARMUP_STEPS
+                    for g in optimizer.param_groups:
+                        g["lr"] = lr
+                x_enc, x_dec, y = x_enc.to(DEVICE), x_dec.to(DEVICE), y.to(DEVICE)
                 optimizer.zero_grad()
-                output = model.forward(X_enc_batch, X_dec_batch)
-                loss = criterion(output, y_batch)
+                prediction = model(x_enc, x_dec)
+                loss = criterion(prediction, y)
                 loss.backward()
+                clip_grad_norm_(model.parameters(), max_norm=MAX_GRADIENT_NORM)
                 optimizer.step()
-                batch_start = batch_end
                 epoch_loss += loss.detach()
-            print("training loss:", epoch_loss.cpu().numpy() / n_batches)
+                step_i += 1
 
-            validation_loss = 0
-            n_batches_dev = math.ceil(X_valid.shape[0] / batch_size)
-            batch_start = 0
-            for batch_i in tqdm(range(n_batches_dev)):
-                batch_end = batch_start + batch_size
-                X_enc_batch = torch.tensor(X_valid[batch_start:batch_end], dtype=torch.float).to(device)
-                X_dec_batch = torch.tensor(Y_valid[batch_start:batch_end], dtype=torch.float).to(device)
-                y_batch = X_dec_batch[:, :, 0].clone()
-                X_dec_batch[:, :, 0] = 0
-                with torch.no_grad():
-                    output = model.forward(X_enc_batch, X_dec_batch)
-                loss = criterion(output, y_batch)
-                validation_loss += loss
-                batch_start = batch_end
-            validation_loss = validation_loss.cpu().numpy() / n_batches_dev
-            print("validation loss:", validation_loss)
+                if batch_i + 1 == len(training_data_loader) or (batch_i + 1) % VALIDATE_EVERY_K_STEPS == 0:
+                    print("training loss:", epoch_loss.cpu().numpy() / (batch_i + 1))
+                    validation_result = evaluate_model(model, validation_data_loader, n_batches=VALIDATION_BATCHES)
+                    print(validation_result)
+                    validation_loss = validation_result["mse"]
+                    print("validation loss:", validation_loss)
 
-            if validation_loss < best_validation_loss:
-                torch.save(model, model_path)
-                print("model saved at", model_path)
-                best_validation_loss = validation_loss
-            else:
-                epochs_without_improvement += 1
-                if epochs_without_improvement == patience:
-                    print("early stopping")
-                    break
-            scheduler.step()
+                    if validation_loss < best_validation_loss:
+                        torch.save(model, model_path)
+                        print("model saved at", model_path)
+                        best_validation_loss = validation_loss
+                        epochs_without_improvement = -1
+
+                        #test_result = evaluate_model(model, test_data_loader)
+                        #print(test_result)
+                        #print("test loss:", test_result["mse"])
+
+                    if step_i > WARMUP_STEPS:
+                        if lr_decay_start:
+                            scheduler.step()
+                        else:
+                            lr_decay_start = True
+                    print(f"learning rate set to {optimizer.param_groups[0]['lr']}")
+
+                    epochs_without_improvement += 1
+                    if epochs_without_improvement == PATIENCE:
+                        print("early stopping")
+                        early_stopping = True
+                        break
+                    model.train()
+
+        training_time = time.time() - start_time
+
+        now = datetime.now()
+        dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
+        with open(TRAINING_TIME_FILE, "a") as training_time_file:
+            training_time_file.write(f"{model_name} {dt_string} {training_time}\n")
+
     else:
-        print("* testing *")
         model = torch.load(model_path)
-        model: TimeSeriesTransformer
-        n_batches = math.ceil(X_test.shape[0] / batch_size)
-        batch_start = 0
-        test_loss = 0
-        predictions_per_building = X_test.shape[0] // N_BUILDINGS
-        print(predictions_per_building, "predictions per building")
-        test_prediction_times = prediction_times[-predictions_per_building:]
-        collected_predictions = {building: [] for building in buildings}
-        for batch_i in tqdm(range(n_batches)):
-            batch_end = batch_start + batch_size
-            X_enc_batch = torch.tensor(X_test[batch_start:batch_end], dtype=torch.float).to(device)
-            X_dec_batch = torch.tensor(Y_test[batch_start:batch_end], dtype=torch.float).to(device)
-            y_batch = X_dec_batch[:, :, 0].clone()
-            X_dec_batch[:, :, 0] = 0
-            with torch.no_grad():
-                output = model(X_enc_batch, X_dec_batch)
-                loss = criterion(output, y_batch)
-                test_loss += loss.detach()
-            output = output.cpu().numpy()
-            for i in range(output.shape[0]):
-                index = batch_start + i
-                #print(index, predictions_per_building, len(buildings))
-                building = buildings[index // predictions_per_building]
-                prediction = output[i]
-                prediction = scalers[building].inverse_transform(prediction.reshape(-1, 1)).flatten()
-                collected_predictions[building].append(prediction)
-            batch_start = batch_end
-        print(test_loss.cpu().numpy() / n_batches)
-
-        for building in buildings:
-            collected_predictions[building] = np.stack(collected_predictions[building])
-        with open("results/predictions.pkl", "wb") as f:
-            pickle.dump(collected_predictions, f)
-
-    # TODO:
-    # test error
-    # metriken
-    # ! validation error !
-    # ! early stopping !
-    # example predictions
-    # attention scores
-    # baseline(s)
+        # print(model)
+        test_result = evaluate_model(model, test_data_loader)
+        print(test_result)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--training", action="store_true")
+    parser.add_argument("--dataset", type=str, required=True)
+    parser.add_argument("--horizon", type=int, required=True)
+    parser.add_argument("--in", dest="input_length", type=int, required=False, default=168)
+    parser.add_argument("--lr", dest="learning_rate", type=float, required=False, default=0.0001)
+    parser.add_argument("--bs", dest="batch_size", type=int, required=False, default=128)
+    parser.add_argument("--enc", dest="encoder_layers", type=int, required=False, default=3)
+    parser.add_argument("--dec", dest="decoder_layers", type=int, required=False, default=3)
+    parser.add_argument("--d_model", type=int, required=False, default=128)
+    parser.add_argument("--conv", dest="conv_filter_width", type=int, required=False, default=None)
+    parser.add_argument("--max_pooling", type=int, required=False, default=None)
+    parser.add_argument("--test", action="store_true")
+    parser.add_argument("--name", dest="model_name", type=str, required=False, default=None)
+    parser.add_argument("--informer", action="store_true")
+    parser.add_argument("--mv", action="store_true")
+    parser.add_argument("--seed", type=int, required=False, default=None)
+    parser.add_argument("--client", type=int, required=False, default=None)
+    parser.add_argument("--lstm", action="store_true")
     args = parser.parse_args()
     main(args)
