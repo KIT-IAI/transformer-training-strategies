@@ -1,4 +1,5 @@
 import argparse
+import os
 import random
 
 import torch
@@ -16,6 +17,7 @@ from dataset.multivariate_transformer_dataset import MultivariateTransformerData
 from transformer_network import TimeSeriesTransformer
 from transformer.informer import Informer
 from lstm_model import LSTMModel
+from helper.pickle_helper import dump_pickle
 
 
 DEVICE = "cuda"
@@ -151,6 +153,8 @@ def main(args):
         lr_decay_start = False
 
         start_time = time.time()
+        training_losses = []
+        validation_losses = {}
 
         for epoch in range(1, EPOCHS + 1):
             if early_stopping:
@@ -172,7 +176,9 @@ def main(args):
                 loss.backward()
                 clip_grad_norm_(model.parameters(), max_norm=MAX_GRADIENT_NORM)
                 optimizer.step()
-                epoch_loss += loss.detach()
+                loss = loss.detach()
+                epoch_loss += loss
+                training_losses.append(loss.cpu().numpy())
                 step_i += 1
 
                 if batch_i + 1 == len(training_data_loader) or (batch_i + 1) % VALIDATE_EVERY_K_STEPS == 0:
@@ -181,6 +187,7 @@ def main(args):
                     print(validation_result)
                     validation_loss = validation_result["mse"]
                     print("validation loss:", validation_loss)
+                    validation_losses[step_i] = validation_loss
 
                     if validation_loss < best_validation_loss:
                         torch.save(model, model_path)
@@ -212,6 +219,11 @@ def main(args):
         dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
         with open(TRAINING_TIME_FILE, "a") as training_time_file:
             training_time_file.write(f"{model_name} {dt_string} {training_time}\n")
+
+        log_dir = f"logs/{dt_string.replace('/', '-').replace(':', '-')}_{model_name}"
+        os.makedirs(log_dir)
+        dump_pickle(training_losses, f"{log_dir}/training_losses.pkl")
+        dump_pickle(validation_losses, f"{log_dir}/validation_losses.pkl")
 
     else:
         model = torch.load(model_path)
