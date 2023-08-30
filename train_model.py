@@ -60,6 +60,7 @@ def main(args):
     LEARNING_RATE = args.learning_rate
     EPOCHS = 100
     PATIENCE = 10
+    EVALUATE_VALIDATON_ERROR_EVERY_K_STEPS = 1000
     VALIDATE_EVERY_K_STEPS = 10000
     VALIDATION_BATCHES = -1
     GAMMA = 0.8
@@ -181,7 +182,7 @@ def main(args):
                 training_losses.append(loss.cpu().numpy())
                 step_i += 1
 
-                if batch_i + 1 == len(training_data_loader) or (batch_i + 1) % VALIDATE_EVERY_K_STEPS == 0:
+                if batch_i + 1 == len(training_data_loader) or (batch_i + 1) % EVALUATE_VALIDATON_ERROR_EVERY_K_STEPS == 0:
                     print("training loss:", epoch_loss.cpu().numpy() / (batch_i + 1))
                     validation_result = evaluate_model(model, validation_data_loader, n_batches=VALIDATION_BATCHES)
                     print(validation_result)
@@ -189,28 +190,25 @@ def main(args):
                     print("validation loss:", validation_loss)
                     validation_losses[step_i] = validation_loss
 
-                    if validation_loss < best_validation_loss:
-                        torch.save(model, model_path)
-                        print("model saved at", model_path)
-                        best_validation_loss = validation_loss
-                        epochs_without_improvement = -1
+                    if batch_i + 1 == len(training_data_loader) or (batch_i + 1) % VALIDATE_EVERY_K_STEPS == 0:
+                        if validation_loss < best_validation_loss:
+                            torch.save(model, model_path)
+                            print("model saved at", model_path)
+                            best_validation_loss = validation_loss
+                            epochs_without_improvement = -1
 
-                        #test_result = evaluate_model(model, test_data_loader)
-                        #print(test_result)
-                        #print("test loss:", test_result["mse"])
+                        if step_i > WARMUP_STEPS:
+                            if lr_decay_start:
+                                scheduler.step()
+                            else:
+                                lr_decay_start = True
+                            print(f"learning rate set to {optimizer.param_groups[0]['lr']}")
 
-                    if step_i > WARMUP_STEPS:
-                        if lr_decay_start:
-                            scheduler.step()
-                        else:
-                            lr_decay_start = True
-                    print(f"learning rate set to {optimizer.param_groups[0]['lr']}")
-
-                    epochs_without_improvement += 1
-                    if epochs_without_improvement == PATIENCE:
-                        print("early stopping")
-                        early_stopping = True
-                        break
+                        epochs_without_improvement += 1
+                        if epochs_without_improvement == PATIENCE:
+                            print("early stopping")
+                            early_stopping = True
+                            break
                     model.train()
 
         training_time = time.time() - start_time
