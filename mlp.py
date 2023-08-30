@@ -1,4 +1,6 @@
-import sys
+import argparse
+from typing import Optional
+
 import numpy as np
 import torch
 from torch import nn
@@ -7,6 +9,7 @@ import time
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import random
+from tqdm import tqdm
 
 from dataset.electricity_dataset import ElectricityDataset
 from linear_baseline import get_x_y, unscale
@@ -48,7 +51,7 @@ class FlatDataset(Dataset):
 METRICS = ["mae", "mse", "unscaled_mae", "unscaled_mse"]
 
 
-def evaluate(model, data_loader: DataLoader, mean: float, scale: float):
+def evaluate(model, data_loader: DataLoader, mean: Optional[float], scale: Optional[float]):
     model.eval()
     mse_criterion = nn.MSELoss()
     mae_criterion = nn.L1Loss()
@@ -58,24 +61,26 @@ def evaluate(model, data_loader: DataLoader, mean: float, scale: float):
             prediction = model(x)
         results["mse"] += mse_criterion(y, prediction)
         results["mae"] += mae_criterion(y, prediction)
-        y = y.cpu().numpy()
-        prediction = prediction.cpu().numpy()
-        y_unscaled = unscale(y, mean, scale)
-        prediction_unscaled = unscale(prediction, mean, scale)
-        results["unscaled_mse"] += mean_squared_error(y_unscaled, prediction_unscaled)
-        results["unscaled_mae"] += mean_absolute_error(y_unscaled, prediction_unscaled)
+        if mean is not None and scale is not None:
+            y = y.cpu().numpy()
+            prediction = prediction.cpu().numpy()
+            y_unscaled = unscale(y, mean, scale)
+            prediction_unscaled = unscale(prediction, mean, scale)
+            results["unscaled_mse"] += mean_squared_error(y_unscaled, prediction_unscaled)
+            results["unscaled_mae"] += mean_absolute_error(y_unscaled, prediction_unscaled)
     for metric in results:
         if isinstance(results[metric], torch.Tensor):
             results[metric] = results[metric].cpu().numpy()
         results[metric] = results[metric] / len(data_loader)
-    results["nmae"] = results["unscaled_mae"] / mean * 100
+    if mean is not None:
+        results["nmae"] = results["unscaled_mae"] / mean * 100
     return results
 
 
-if __name__ == "__main__":
+def main(args):
     random.seed(1)
 
-    DATASET_NAME = sys.argv[1]
+    DATASET_NAME = args.dataset
 
     if DATASET_NAME == "electricity":
         n_buildings = 321
@@ -84,16 +89,18 @@ if __name__ == "__main__":
         n_buildings = 299
         TOTAL_BUILDINGS = 299
 
+    GLOBAL = args.glob
+
     INPUT_LENGTH = 168
-    OUTPUT_LENGTH = int(sys.argv[2])
-    N_LAYERS = int(sys.argv[3])
-    N_UNITS = int(sys.argv[4])
+    OUTPUT_LENGTH = args.horizon
+    N_LAYERS = args.layers
+    N_UNITS = args.units
 
     BATCH_SIZE = 128
-    EPOCHS = 100
+    EPOCHS = 1
     LEARNING_RATE = 0.001
     PATIENCE = 10
-    GAMMA = 0.1
+    GAMMA = 0.5
 
     dataset = ElectricityDataset(DATASET_NAME)
     training_data, training_features = dataset.get_training_data()
@@ -103,21 +110,46 @@ if __name__ == "__main__":
     building_test_results = []
     total_training_time = 0
 
-    buildings = list(range(TOTAL_BUILDINGS))
-    if n_buildings < TOTAL_BUILDINGS:
-        random.shuffle(buildings)
-        buildings = buildings[:n_buildings]
-        buildings = sorted(buildings)
+    if GLOBAL:
+        buildings = [None]
+    else:
+        buildings = list(range(TOTAL_BUILDINGS))
+        if n_buildings < TOTAL_BUILDINGS:
+            random.shuffle(buildings)
+            buildings = buildings[:n_buildings]
+            buildings = sorted(buildings)
 
     for building in buildings:
         print(f"* building {building} *")
 
-        X_train, Y_train = get_x_y(training_data[:, building], training_features, input_length=INPUT_LENGTH,
-                                   output_length=OUTPUT_LENGTH)
-        X_valid, Y_valid = get_x_y(validation_data[:, building], validation_features, input_length=INPUT_LENGTH,
-                                   output_length=OUTPUT_LENGTH)
-        X_test, Y_test = get_x_y(test_data[:, building], test_features, input_length=INPUT_LENGTH,
-                                 output_length=OUTPUT_LENGTH)
+        if building is None:  # global model
+            X_train, Y_train, X_valid, Y_valid, X_test, Y_test = [], [], [], [], [], []
+            for column in range(TOTAL_BUILDINGS):
+                x_train, y_train = get_x_y(training_data[:, column], training_features, input_length=INPUT_LENGTH,
+                                           output_length=OUTPUT_LENGTH)
+                x_valid, y_valid = get_x_y(validation_data[:, column], validation_features, input_length=INPUT_LENGTH,
+                                           output_length=OUTPUT_LENGTH)
+                x_test, y_test = get_x_y(test_data[:, column], test_features, input_length=INPUT_LENGTH,
+                                         output_length=OUTPUT_LENGTH)
+                X_train.append(x_train)
+                Y_train.append(y_train)
+                X_valid.append(x_valid)
+                Y_valid.append(y_valid)
+                X_test.append(x_test)
+                Y_test.append(y_test)
+            X_train = np.concatenate(X_train, axis=0)
+            Y_train = np.concatenate(Y_train, axis=0)
+            X_valid = np.concatenate(X_valid, axis=0)
+            Y_valid = np.concatenate(Y_valid, axis=0)
+            X_test = np.concatenate(X_test, axis=0)
+            Y_test = np.concatenate(Y_test, axis=0)
+        else:
+            X_train, Y_train = get_x_y(training_data[:, building], training_features, input_length=INPUT_LENGTH,
+                                       output_length=OUTPUT_LENGTH)
+            X_valid, Y_valid = get_x_y(validation_data[:, building], validation_features, input_length=INPUT_LENGTH,
+                                       output_length=OUTPUT_LENGTH)
+            X_test, Y_test = get_x_y(test_data[:, building], test_features, input_length=INPUT_LENGTH,
+                                     output_length=OUTPUT_LENGTH)
         train_dataset = FlatDataset(X_train, Y_train)
         validation_dataset = FlatDataset(X_valid, Y_valid)
         test_dataset = FlatDataset(X_test, Y_test)
@@ -125,8 +157,8 @@ if __name__ == "__main__":
         validation_dataloader = DataLoader(validation_dataset, batch_size=BATCH_SIZE)
         test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
         dataset.scaler: StandardScaler
-        data_mean = dataset.scaler.mean_[building]
-        data_scale = dataset.scaler.scale_[building]
+        data_mean = None if building is None else dataset.scaler.mean_[building]
+        data_scale = None if building is None else dataset.scaler.scale_[building]
 
         n_features = X_train.shape[1]
         model = MLPRegressor(n_features, OUTPUT_LENGTH, n_layers=N_LAYERS, n_units=N_UNITS)
@@ -144,11 +176,11 @@ if __name__ == "__main__":
         epochs_without_improvement = 0
         start_time = time.time()
 
-        for epoch in range(1, EPOCHS):
+        for epoch in range(1, EPOCHS + 1):
             epoch_loss = 0
 
             model.train()
-            for x, y in train_dataloader:
+            for x, y in tqdm(train_dataloader):
                 optimizer.zero_grad()
                 prediction = model(x)
                 loss = criterion(y, prediction)
@@ -185,7 +217,20 @@ if __name__ == "__main__":
     print(f"total training time: {total_training_time:.2f}")
 
     with open("mlp_results.txt", "a") as file:
-        file.write(str(sys.argv[1:]))
+        file.write(args)
         file.write(" ")
         file.write(str(mean_results))
+        file.write(f" training_time={total_training_time:.2f}")
         file.write("\n")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, required=True)
+    parser.add_argument("--horizon", type=int, required=True)
+    parser.add_argument("--in", dest="input_length", type=int, required=False, default=168)
+    parser.add_argument("--layers", type=int, required=False, default=2)
+    parser.add_argument("--units", type=int, required=False, default=1024)
+    parser.add_argument("--glob", action="store_true")
+    args = parser.parse_args()
+    main(args)
