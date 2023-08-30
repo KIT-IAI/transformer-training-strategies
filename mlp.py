@@ -86,14 +86,14 @@ if __name__ == "__main__":
 
     INPUT_LENGTH = 168
     OUTPUT_LENGTH = int(sys.argv[2])
-    N_LAYERS = 2
-    N_UNITS = 1024
+    N_LAYERS = int(sys.argv[3])
+    N_UNITS = int(sys.argv[4])
 
     BATCH_SIZE = 128
     EPOCHS = 100
     LEARNING_RATE = 0.001
     PATIENCE = 10
-    GAMMA = 0.5
+    GAMMA = 0.1
 
     dataset = ElectricityDataset(DATASET_NAME)
     training_data, training_features = dataset.get_training_data()
@@ -177,7 +177,15 @@ if __name__ == "__main__":
         total_training_time += time.time() - start_time
         building_test_results.append(test_results)
 
+    mean_results = {}
     for metric in building_test_results[0]:
         mean_result = np.mean([result[metric] for result in building_test_results])
         print(f"{metric}: {mean_result}")
+        mean_results[metric] = mean_result
     print(f"total training time: {total_training_time:.2f}")
+
+    with open("mlp_results.txt", "a") as file:
+        file.write(str(sys.argv[1:]))
+        file.write(" ")
+        file.write(str(mean_results))
+        file.write("\n")
